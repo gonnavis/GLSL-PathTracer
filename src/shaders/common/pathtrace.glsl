@@ -141,41 +141,12 @@ vec3 DirectLight(in Ray r, in State state)
     vec3 L = vec3(0.0);
     BsdfSampleRec bsdfSampleRec;
 
-    vec3 surfacePos = state.fhp + state.normal * EPS;
+    vec3 surfacePos = state.fhp + state.ffnormal * EPS;
 
-    // Environment Light
-#ifdef ENVMAP
-#ifndef CONSTANT_BG
-    {
-        vec3 color;
-        vec4 dirPdf = EnvSample(color);
-        vec3 lightDir = dirPdf.xyz;
-        float lightPdf = dirPdf.w;
 
-        if (state.isSubsurface || dot(lightDir, state.ffnormal) > 0.0)
-        {
-            Ray shadowRay = Ray(surfacePos, lightDir);
-            bool inShadow = AnyHit(shadowRay, INFINITY - EPS);
 
-            if (!inShadow)
-            {
-                float bsdfPdf = DisneyPdf(r, state, lightDir);
-                vec3 f = DisneyEval(r, state, lightDir);
-
-                if (bsdfPdf > 0.0)
-                {
-                    float misWeight = powerHeuristic(lightPdf, bsdfPdf);
-                    if (misWeight > 0.0)
-                        L += misWeight * f * abs(dot(lightDir, state.ffnormal)) * color / lightPdf;
-                }
-            }
-        }
-    }
-#endif
-#endif
-
-    // Analytic Lights 
-#ifdef LIGHTS
+    /* Sample Analytic Lights */
+    if (numOfLights > 0)
     {
         LightSampleRec lightSampleRec;
         Light light;
@@ -184,16 +155,13 @@ vec3 DirectLight(in Ray r, in State state)
         int index = int(rand() * float(numOfLights));
 
         // Fetch light Data
-        vec3 position = texelFetch(lightsTex, ivec2(index * 5 + 0, 0), 0).xyz;
-        vec3 emission = texelFetch(lightsTex, ivec2(index * 5 + 1, 0), 0).xyz;
-        vec3 u        = texelFetch(lightsTex, ivec2(index * 5 + 2, 0), 0).xyz; // u vector for rect
-        vec3 v        = texelFetch(lightsTex, ivec2(index * 5 + 3, 0), 0).xyz; // v vector for rect
-        vec3 params   = texelFetch(lightsTex, ivec2(index * 5 + 4, 0), 0).xyz;
-        float radius  = params.x;
-        float area    = params.y;
-        float type    = params.z; // 0->rect, 1->sphere
+        vec3 p = texelFetch(lightsTex, ivec2(index * 5 + 0, 0), 0).xyz;
+        vec3 e = texelFetch(lightsTex, ivec2(index * 5 + 1, 0), 0).xyz;
+        vec3 u = texelFetch(lightsTex, ivec2(index * 5 + 2, 0), 0).xyz;
+        vec3 v = texelFetch(lightsTex, ivec2(index * 5 + 3, 0), 0).xyz;
+        vec3 rad = texelFetch(lightsTex, ivec2(index * 5 + 4, 0), 0).xyz;
 
-        light = Light(position, emission, u, v, radius, area, type);
+        light = Light(p, e, u, v, rad.x, rad.y, rad.z);
         sampleLight(light, lightSampleRec);
 
         vec3 lightDir = lightSampleRec.surfacePos - surfacePos;
@@ -201,7 +169,7 @@ vec3 DirectLight(in Ray r, in State state)
         float lightDistSq = lightDist * lightDist;
         lightDir /= sqrt(lightDistSq);
 
-        if (!state.isSubsurface && (dot(lightDir, state.ffnormal) <= 0.0 || dot(lightDir, lightSampleRec.normal) >= 0.0))
+        if (dot(lightDir, state.ffnormal) <= 0.0 || dot(lightDir, lightSampleRec.normal) >= 0.0)
             return L;
 
         Ray shadowRay = Ray(surfacePos, lightDir);
@@ -213,11 +181,9 @@ vec3 DirectLight(in Ray r, in State state)
             vec3 f = DisneyEval(r, state, lightDir);
             float lightPdf = lightDistSq / (light.area * abs(dot(lightSampleRec.normal, lightDir)));
 
-            if (bsdfPdf > 0.0)
-                L += powerHeuristic(lightPdf, bsdfPdf) * f * abs(dot(state.ffnormal, lightDir)) * lightSampleRec.emission / lightPdf;
+            L += powerHeuristic(lightPdf, bsdfPdf) * f * abs(dot(state.ffnormal, lightDir)) * lightSampleRec.emission / lightPdf;
         }
     }
-#endif
 
     return L;
 }
@@ -266,9 +232,6 @@ vec3 PathTrace(Ray r)
         GetNormalsAndTexCoord(state, r);
         GetMaterialsAndTextures(state, r);
 
-        if (dot(state.normal, state.ffnormal) > 0.0)
-            absorption = vec3(0.0);
-
         radiance += state.mat.emission * throughput;
 
 #ifdef LIGHTS
@@ -279,17 +242,11 @@ vec3 PathTrace(Ray r)
         }
 #endif
 
-        throughput *= exp(-absorption * t);
-
         radiance += DirectLight(r, state) * throughput;
         
         vec3 f = DisneySample_f(r, state, bsdfSampleRec.bsdfDir, bsdfSampleRec.pdf);
 
         //bsdfSampleRec.pdf = DisneyPdf(r, state, bsdfSampleRec.bsdfDir, true, H);
-
-        // Set absorption only if the ray is currently inside the object.
-        if (dot(state.ffnormal, bsdfSampleRec.bsdfDir) < 0.0)
-            absorption = -log(state.mat.extinction);
 
         if (bsdfSampleRec.pdf > 0.0)
             throughput *= f * abs(dot(state.ffnormal, bsdfSampleRec.bsdfDir)) / bsdfSampleRec.pdf;
@@ -298,13 +255,13 @@ vec3 PathTrace(Ray r)
 
 #ifdef RR
         // Russian roulette
-        if (depth >= RR_DEPTH)
+        /*if (depth >= RR_DEPTH)
         {
             float q = min(max(throughput.x, max(throughput.y, throughput.z)) * state.eta * state.eta + 0.001, 0.95);
             if (rand() > q)
                 break;
             throughput /= q;
-        }
+        }*/
 #endif
 
         r.direction = bsdfSampleRec.bsdfDir;
